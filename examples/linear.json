@@ -1,0 +1,10 @@
+{
+  "name": "Linear data flow",
+  "dag": {
+    "nodes": [
+      {"id": "a", "handler": "input", "dependencies": []},
+      {"id": "b", "handler": "llm", "dependencies": ["a"], "config": {"prompt": "ID {{ a.id }}"}},
+      {"id": "c", "handler": "output", "dependencies": ["b"], "data": "{{ b }}"}
+    ]
+  }
+}

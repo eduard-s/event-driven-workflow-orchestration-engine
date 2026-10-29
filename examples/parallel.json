@@ -1,0 +1,27 @@
+{
+  "name": "Parallel API Fetcher",
+  "dag": {
+    "nodes": [
+      {"id": "input", "handler": "input", "dependencies": []},
+      {
+        "id": "get_user",
+        "handler": "call_external_service",
+        "dependencies": ["input"],
+        "config": {"url": "http://localhost:8911/document/policy/list"}
+      },
+      {
+        "id": "get_posts",
+        "handler": "call_external_service",
+        "dependencies": ["input"],
+        "config": {"url": "http://localhost:8911/document/policy/list"}
+      },
+      {
+        "id": "get_comments",
+        "handler": "call_external_service",
+        "dependencies": ["input"],
+        "config": {"url": "http://localhost:8911/document/policy/list"}
+      },
+      {"id": "output", "handler": "output", "dependencies": ["get_user", "get_posts", "get_comments"]}
+    ]
+  }
+}

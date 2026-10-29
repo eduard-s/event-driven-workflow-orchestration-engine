@@ -1,0 +1,145 @@
+name: appliedai-workflow
+
+x-logs: &logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-runtime-environment: &runtime-environment
+  WF_POSTGRES_DSN: postgresql://workflow:workflow@postgres:5432/workflow
+  WF_REDIS_URL: redis://redis:6379/0
+  WF_LOG_LEVEL: ${WF_LOG_LEVEL:-INFO}
+  WF_LOG_QUEUE_SIZE: ${WF_LOG_QUEUE_SIZE:-1024}
+  WF_HANDLER_TIMEOUT: ${WF_HANDLER_TIMEOUT:-10}
+  WF_EXECUTION_TIMEOUT: ${WF_EXECUTION_TIMEOUT:-300}
+  WF_WORKER_CONCURRENCY: ${WF_WORKER_CONCURRENCY:-4}
+  WF_HANDLER_MODE: ${WF_HANDLER_MODE:-auto}
+  WF_REQUESTS_PER_SECOND: ${WF_REQUESTS_PER_SECOND:-10}
+  WF_EXECUTION_SLOTS: ${WF_EXECUTION_SLOTS:-8}
+  WF_MAX_STARTS: ${WF_MAX_STARTS:-3}
+  WF_RETENTION_SECONDS: ${WF_RETENTION_SECONDS:-86400}
+  WF_ENABLE_TEST_FIXTURES: ${WF_ENABLE_TEST_FIXTURES:-0}
+
+x-application: &application
+  image: appliedai-workflow-engine:local
+  build:
+    context: ..
+    dockerfile: infra/Dockerfile
+    target: runtime
+  init: true
+  logging: *logs
+  environment: *runtime-environment
+  stop_grace_period: 30s
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *application
+    environment:
+      <<: *runtime-environment
+      WF_AUDIT_POSTGRES_DSN: ${WF_AUDIT_POSTGRES_DSN:-postgresql://workflow:workflow@postgres:5432/workflow_audit}
+      WF_MAX_EXECUTIONS: ${WF_MAX_EXECUTIONS:-100}
+      WF_MAX_RECORDS: ${WF_MAX_RECORDS:-1000}
+      WF_MAX_BODY_BYTES: ${WF_MAX_BODY_BYTES:-1048576}
+      WF_BODY_TIMEOUT: ${WF_BODY_TIMEOUT:-5}
+      WF_BODY_CONCURRENCY: ${WF_BODY_CONCURRENCY:-4}
+    restart: unless-stopped
+    command: [python, -m, api]
+    ports:
+      - 127.0.0.1:${WF_API_PORT:-18000}:8000
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  orchestrator:
+    <<: *application
+    environment:
+      <<: *runtime-environment
+      WF_ORCHESTRATOR_RETRIES: ${WF_ORCHESTRATOR_RETRIES:-3}
+      WF_EVENT_CONCURRENCY: ${WF_EVENT_CONCURRENCY:-3}
+      WF_POOL_SIZE: ${WF_POOL_SIZE:-5}
+    restart: unless-stopped
+    command: [python, -m, orchestrator]
+    mem_limit: 512m
+
+  worker:
+    <<: *application
+    environment:
+      WF_REDIS_URL: redis://redis:6379/0
+      WF_LOG_LEVEL: ${WF_LOG_LEVEL:-INFO}
+      WF_LOG_QUEUE_SIZE: ${WF_LOG_QUEUE_SIZE:-1024}
+      WF_WORKER_CONCURRENCY: ${WF_WORKER_CONCURRENCY:-4}
+      WF_HANDLER_MODE: ${WF_HANDLER_MODE:-auto}
+      WF_ENABLE_TEST_FIXTURES: ${WF_ENABLE_TEST_FIXTURES:-0}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: [python, -m, worker]
+    mem_limit: 1g
+
+  postgres:
+    image: postgres:18@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    restart: unless-stopped
+    logging: *logs
+    environment:
+      POSTGRES_USER: workflow
+      POSTGRES_PASSWORD: workflow
+      POSTGRES_DB: workflow
+    ports:
+      - 127.0.0.1:${WF_POSTGRES_PORT:-15432}:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ../db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U workflow -d workflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8.4.6@sha256:c9be7684a2179db5eb59e095ab3232537be2f895abc4ddb108737b2a4854c513
+    restart: unless-stopped
+    logging: *logs
+    command: [redis-server, --appendonly, "yes", --appendfsync, always, --maxmemory, 256mb, --maxmemory-policy, noeviction]
+    ports:
+      - 127.0.0.1:${WF_REDIS_PORT:-16379}:6379
+    volumes:
+      - redis-data:/data
+    mem_limit: 512m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  test:
+    <<: *application
+    image: appliedai-workflow-engine:test
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: test
+    profiles: [test]
+    command: [pytest, -q, tests/unit, tests/component, tests/integration]
+    environment:
+      <<: *runtime-environment
+      WF_ENABLE_TEST_FIXTURES: "1"
+      WF_REQUIRE_INFRA: "1"
+
+volumes:
+  postgres-data:
+  redis-data:
